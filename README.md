@@ -119,8 +119,8 @@ in the pending database as an audit record. Rejection never publishes. This is a
 retryable sequence, not a transaction spanning separate connections.
 
 The shared credential provides a shared audit identity. It does not identify which
-individual maintainer made a decision. Existing approved records cannot yet be
-edited from this interface; editing applies to pending submissions.
+individual maintainer made a decision. Employees can also search and edit existing approved records from the Approved
+directory tab.
 
 ## Deployment preparation
 
@@ -174,3 +174,35 @@ retry-safe approval, rejection and logout against fresh temporary Atlas database
 which were removed afterward. Manual employee review confirmed rejection without
 publication and approval creating one destination record. Rejected submissions
 and review histories are retained indefinitely for now.
+
+
+## Editing approved resources
+
+After employee sign-in, select **Approved directory**. Search locations or events
+by name, address, reference or ZIP (including ZIPs embedded in legacy addresses).
+Results are paginated in groups of 30. Select a record, edit its details, add a
+reason and confirm before saving. Saving immediately updates the approved database.
+
+IDs and original provenance/custom fields are preserved. ZIP and source URL remain
+optional for older records. Event start/end times retain their stored precision
+when unchanged. A full-document version digest and atomic MongoDB comparison reject
+concurrent edits with 409, including changes made outside this application. Reload
+the record and reapply edits after a conflict. A timestamped edit reason is stored
+in the approved record, attributed to the shared employee account; the latest ten
+entries are displayed and the stored history is not automatically removed.
+
+Location edits do not cascade to linked events' saved venue snapshots. Review those
+events afterward; **Use current venue details** copies the current location name,
+address, area and coordinates before saving an event. Event saves validate their
+venue reference and snapshot. New approval rules still require future event dates;
+existing approved events may have historical dates so employees can correct them.
+
+Authenticated endpoints:
+
+- `GET /api/moderation/resources?resource_type=place&q=pantry&zip=99344&offset=0`
+- `GET /api/moderation/resources/{place|event}/{id}`
+- `PUT /api/moderation/resources/{place|event}/{id}` with `version`, `resource`, `note`.
+
+The publisher credential now needs update permission on approved `places` and
+`events` in addition to read/insert. No delete endpoint is provided. Public services
+have none of these routes. The public submission page remains deferred.

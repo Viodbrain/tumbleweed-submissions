@@ -11,7 +11,7 @@ from app import maintainer_auth
 from app.config import get_config
 from app.db import close_db
 from app.directory_security import DirectorySecurity
-from app.routes import directory, moderation
+from app.routes import directory, moderation, resources
 
 
 @asynccontextmanager
@@ -36,6 +36,7 @@ def create_app(role=None):
         app.include_router(directory.router)
     else:
         app.include_router(moderation.router)
+        app.include_router(resources.router)
         app.include_router(maintainer_auth.router)
 
     @app.get("/", include_in_schema=False)
