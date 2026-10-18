@@ -57,3 +57,16 @@ class ReviewDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     revision: int = Field(ge=1)
     note: str = Field(min_length=3, max_length=1000)
+
+
+class PublicSubmission(ResourceInput):
+    """Visitors can leave map verification to employees for a new location."""
+
+    lat: Annotated[float | None, Field(ge=-90, le=90, allow_inf_nan=False)] = None
+    lng: Annotated[float | None, Field(ge=-180, le=180, allow_inf_nan=False)] = None
+
+    @model_validator(mode="after")
+    def coordinate_pair(self):
+        if (self.lat is None) != (self.lng is None):
+            raise ValueError("Provide both map coordinates or leave both blank")
+        return self

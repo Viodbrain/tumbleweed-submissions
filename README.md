@@ -6,8 +6,8 @@ employee sign-in page. Employees can review, edit, approve and reject pending
 resources after database setup. Login uses salted Argon2id password hashes and
 short-lived sessions.
 
-The public directory/submission page is saved for a later phase. Its source is
-preserved, but its routes are disabled in the default moderator service. This version runs locally. Atlas connections and the manual approval/rejection
+The public directory and submission page runs as a separate public service. Its
+routes stay disabled in the employee service. This version runs locally. Atlas connections and the manual approval/rejection
 workflow have been verified; hosting has not been deployed. Connection secrets
 and employee credentials are local configuration and are not included here.
 
@@ -76,7 +76,7 @@ It stores an Argon2id hash with a random salt; no plaintext password is saved.
 Running it again rotates the credential and revokes prior sessions. Share the
 password through a password manager. There is no public registration.
 
-For the later public-site phase, explicitly set `SERVICE_ROLE=public` and remove
+For the public site, explicitly set `SERVICE_ROLE=public` and remove
 the publisher URI from that process before starting:
 
 ```sh
@@ -205,4 +205,88 @@ Authenticated endpoints:
 
 The publisher credential now needs update permission on approved `places` and
 `events` in addition to read/insert. No delete endpoint is provided. Public services
-have none of these routes. The public submission page remains deferred.
+have none of these routes. The public site remains a separate service with no employee routes.
+
+
+## Public location and event requests
+
+The public site opens at `/directory`. No visitor account is required. Visitors can
+share a location with an address and a public verification source; exact coordinates
+are optional. Employees must add verified coordinates and save before approval.
+The API returns 422 and leaves the record pending if required review details are
+still missing. A submission receipt confirms only that the request is queued, not
+that the resource has been approved.
+
+For events, visitors enter a ZIP and choose an approved venue. They can narrow the
+venue list by name, or select **Add an event here** from a nearby location card.
+`GET /api/venues` returns at most 50 approved venues with public name/address/map
+fields only. Event submission resolves the selected venue server-side and copies
+its canonical name, address, map point and area. A new venue must be submitted and
+approved as a location first. Event start/end dates include the browser timezone.
+
+Public submissions write only pending records and request counters in the
+submissions database. There is no public queue, sign-in, employee editing or
+publishing endpoint. Body limits, input validation, future event checks and hourly
+submission limits apply. The public service uses the submissions connection and
+approved **read** connection only, without the approved writer secret.
+
+For a local preview alongside the employee service, the process-level blank value
+below removes the writer secret inherited from the local `.env`:
+
+```sh
+SERVICE_ROLE=public APPROVED_WRITE_MONGODB_URI= uvicorn app.main:app --port 8014
+```
+
+Open `http://127.0.0.1:8014/directory`. Keep the employee service on port 8012.
+For hosting, use separate environment-variable sets for public and employee
+projects; do not configure the writer variable in the public project. Vercel
+hosting configuration is included below; this change does not create a deployment.
+
+
+## Vercel deployment setup
+
+Import this GitHub repository into **two Vercel projects**, both with the repository
+root as Root Directory and the FastAPI framework preset. Keep the same source,
+with different environment variables per project. `index.py` exports the ASGI app;
+`vercel.json` defines a 60-second function limit, and `.python-version` selects
+Python 3.12. HTML and mounted assets remain under `backend/app/web` and are included
+with the backend. No separate frontend build or static export is required.
+
+Set environment variables privately in Vercel, scoped separately for Production
+and Preview. The application ignores local dotenv files on Vercel, and the upload
+configuration excludes them. Never commit connection strings or employee passwords.
+
+For the public project:
+
+- `SERVICE_ROLE=public`
+- `SUBMISSIONS_DB=tumbleweed_submissions`
+- `APPROVED_DB=tumbleweed`
+- `SUBMISSIONS_MONGODB_URI`: submissions database credential
+- `APPROVED_READ_MONGODB_URI`: approved-data reader credential
+- Leave `APPROVED_WRITE_MONGODB_URI` absent. The public app rejects it.
+
+For the employee project, use the same database names, the appropriate private
+connection strings, `SERVICE_ROLE=moderator`, and add
+`APPROVED_WRITE_MONGODB_URI` for employee publication/editing. An explicit role is
+required on Vercel so a missing setting cannot expose the wrong interface.
+
+Both projects serve HTML and APIs on the same origin, so `ALLOWED_ORIGINS` can stay
+empty. The public root redirects to `/directory`; the employee root redirects to
+`/maintain`. `/health` is available on each. Existing employee credentials and
+sessions stay in Atlas across deploys; do not rerun credential setup automatically.
+
+Before deploying, configure Atlas network access for the selected Vercel networking
+option. Static outbound IP availability depends on the Vercel plan/add-on; do not
+assume your laptop's IP entry covers hosted functions. Prefer a region near Atlas.
+Use isolated databases for Preview deployments if preview actions should not write
+to the live directory. Confirm the visitor IP used for rate limiting behind the
+hosting proxy during hosted verification.
+
+After deployment, verify page/assets, sign-in, venue lookup, submission review and
+approved editing. Verify public employee routes return 404, and check that approved
+writes only happen through authenticated employee actions. These are required hosted
+checks; local entrypoint tests do not prove a Vercel build or Atlas network access.
+
+References: [Vercel FastAPI](https://vercel.com/docs/frameworks/backend/fastapi),
+[Python runtime](https://vercel.com/docs/functions/runtimes/python),
+[network access options](https://vercel.com/kb/guide/can-i-get-a-fixed-ip-address).

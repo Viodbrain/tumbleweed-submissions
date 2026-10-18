@@ -1,6 +1,7 @@
 """Public directory and moderated submissions. Never expose the pending queue publicly."""
 
 import hashlib
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -11,7 +12,7 @@ from pymongo import ReturnDocument
 
 from app import data
 from app.db import get_approved_db, get_submissions_db
-from app.directory_models import ResourceInput
+from app.directory_models import PublicSubmission
 
 router = APIRouter()
 WEB = Path(__file__).resolve().parents[1] / "web"
@@ -110,11 +111,26 @@ async def browse(
 
 
 @router.post("/api/submissions", status_code=202)
-async def submit(resource: ResourceInput, request: Request):
+async def submit(resource: PublicSubmission, request: Request):
     await throttle(request, "submit", 5)
     now = datetime.now(UTC)
     if resource.resource_type == "event" and resource.starts_at <= now:
         raise HTTPException(422, "Events must start in the future")
+    if resource.resource_type == "event":
+        venue = await get_approved_db().places.find_one({"_id": resource.place_id})
+        if venue is None:
+            raise HTTPException(422, "This venue is no longer available. Choose another approved location.")
+        postal_match = re.search(r"\bWA\s+(\d{5})(?:-\d{4})?\b", venue["address"], re.IGNORECASE)
+        resource = resource.model_copy(
+            update={
+                "place_name": venue["name"],
+                "address": venue["address"],
+                "region": venue["region"],
+                "lng": venue["location"]["coordinates"][0],
+                "lat": venue["location"]["coordinates"][1],
+                "zip": venue.get("zip") or (postal_match.group(1) if postal_match else resource.zip),
+            }
+        )
     submission_id = str(uuid4())
     doc = resource.model_dump(mode="python")
     doc["source_url"] = str(resource.source_url)
@@ -130,3 +146,20 @@ async def submit(resource: ResourceInput, request: Request):
         }
     )
     return {"submission_id": submission_id, "status": "pending"}
+
+
+@router.get("/api/venues")
+async def venues(request: Request, zip: str = Query(pattern=r"^[0-9]{5}$"), q: str = Query(default="", max_length=100)):
+    await throttle(request, "venues", 300)
+    filters = [{"$or": [{"zip": zip}, {"address": {"$regex": rf"\b{zip}\b"}}]}]
+    if q.strip():
+        filters.append({"name": {"$regex": re.escape(q.strip()), "$options": "i"}})
+    projection = {key: 1 for key in ("_id", "name", "address", "zip", "location", "region")}
+    rows = (
+        await get_approved_db()
+        .places.find({"$and": filters}, projection)
+        .sort([("name", 1), ("_id", 1)])
+        .limit(51)
+        .to_list(51)
+    )
+    return {"items": rows[:50], "has_more": len(rows) > 50}
