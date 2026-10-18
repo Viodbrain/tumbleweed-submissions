@@ -32,18 +32,20 @@ const fieldsMarkup = `<div class="form-grid">
 <label class="full" data-for="place">Public phone number<input name="phone" type="tel" maxlength="60"></label>
 <label class="full" data-for="event">Venue reference<input name="place_id" maxlength="100"><span class="hint">Choose “Add an event here” on an approved location, or copy its reference.</span></label>
 <label class="full" data-for="event">Venue name<input name="place_name" maxlength="160"></label>
-<label class="full" data-for="event">Event start<input name="starts_at" type="datetime-local"><span class="hint time-zone"></span></label>
+<label class="full" data-for="event">Event start<input name="starts_at" type="datetime-local" step="0.001"><span class="hint time-zone"></span></label>
+<label class="full" data-for="event">Event end (optional)<input name="ends_at" type="datetime-local" step="0.001"></label>
 <label class="full">Verification source URL<input name="source_url" type="url" maxlength="2000" placeholder="https://organization.org/food-support" required><span class="hint">Use the organization’s website or another reliable public listing.</span></label>
 <label class="full">Notes<textarea name="notes" maxlength="2000" placeholder="Eligibility, languages, access details, or information to confirm."></textarea></label></div>`;
-function resourceForm(container, resource = {}) {
+function resourceForm(container, resource = {}, options = {}) {
   container.innerHTML = fieldsMarkup;
   const type = $('[name=resource_type]', container);
   for (const [key, value] of Object.entries(resource)) {
     const input = $(`[name="${key}"]`, container); if (!input || value == null) continue;
     if (input.type === 'checkbox') input.checked = value;
     else if (input.multiple) for (const option of input.options) option.selected = value.includes(option.value);
-    else if (key === 'starts_at') {
-      const date = new Date(value); input.value = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    else if (key === 'starts_at' || key === 'ends_at') {
+      const date = new Date(value); input.value = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 23);
+      input.dataset.originalTime = value; input.dataset.localTime = input.value;
     } else input.value = value;
   }
   $('.time-zone', container).textContent = `Time zone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}. Enter the event time in this zone.`;
@@ -55,6 +57,13 @@ function resourceForm(container, resource = {}) {
     for (const name of ['place_id', 'place_name', 'starts_at']) $(`[name=${name}]`, container).required = type.value === 'event';
   }
   type.addEventListener('change', sync); sync();
+  if (options.approved) {
+    type.closest('label').hidden = true;
+    $('[name=zip]', container).required = false;
+    $('[name=source_url]', container).required = false;
+    $('[name=place_id]', container).parentElement.querySelector('.hint').textContent = 'Copy a location reference from the Approved directory, then use current venue details below.';
+    $('[name=source_url]', container).parentElement.querySelector('.hint').textContent = 'Optional for older records. Add a source when available; do not invent one.';
+  }
 }
 function readResource(form) {
   const values = new FormData(form);
@@ -65,7 +74,14 @@ function readResource(form) {
   if (resource.resource_type === 'place') {
     Object.assign(resource, {kind: values.get('kind'), hours: values.get('hours')?.trim() || null,
       days: values.getAll('days'), phone: values.get('phone')?.trim() || null, accepts_snap: values.has('accepts_snap')});
-  } else Object.assign(resource, {place_id: values.get('place_id').trim(), place_name: values.get('place_name').trim(), starts_at: new Date(values.get('starts_at')).toISOString()});
+   } else {
+    function eventTime(key) {
+      const input = $(`[name=${key}]`, form);
+      if (!input.value) return null;
+      return input.value === input.dataset.localTime ? input.dataset.originalTime : new Date(input.value).toISOString();
+    }
+    Object.assign(resource, {place_id: values.get('place_id').trim(), place_name: values.get('place_name').trim(), starts_at: eventTime('starts_at'), ends_at: eventTime('ends_at')});
+  }
   return resource;
 }
 function safeLink(url, label) {
@@ -134,7 +150,7 @@ if (document.body.dataset.page === 'directory') {
     });
   });
 }
-function signOutUI() { token = null; $('#login-panel').hidden = false; $('#desk').hidden = true; $('#logout').hidden = true; $('#queue').replaceChildren(); $('#review').replaceChildren(); }
+function signOutUI() { token = null; $('#login-panel').hidden = false; $('#desk').hidden = true; $('#logout').hidden = true; $('#queue').replaceChildren(); $('#review').replaceChildren(); document.dispatchEvent(new Event('employee-signed-out')); }
 if (document.body.dataset.page === 'maintain') {
   $('#toggle-password').addEventListener('click', () => {
     const input = $('#maintainer-password'); const visible = input.type === 'password';
@@ -199,4 +215,123 @@ if (document.body.dataset.page === 'maintain') {
       notice('#desk-status', action === 'approve' ? 'Approved. This resource is now available in the public directory and agent searches.' : 'Submission rejected. It has not been published.'); await loadQueue();
     } catch (error) { notice('#desk-status', error.message, true); }
   }
+}
+
+if (document.body.dataset.page === 'maintain') {
+  let approvedType = 'place', approvedOffset = 0, approvedSelection = null, approvedDirty = false;
+  let searchFields = {resource_type: 'place', q: '', zip: ''};
+  let searchSequence = 0, selectionSequence = 0;
+  function mayLeave() { return !approvedDirty || window.confirm('Discard unsaved changes to this approved record?'); }
+  function emptyEditor() {
+    approvedSelection = null; approvedDirty = false; selectionSequence++;
+    $('#approved-editor').replaceChildren(node('h2', 'Choose a record'), node('p', 'Select a location or event to review its approved details.', 'muted'));
+  }
+  function setWorkspace(approved) {
+    $('#approved-workspace').hidden = !approved; $('#pending-workspace').hidden = approved;
+    $('#approved-tab').setAttribute('aria-selected', String(approved)); $('#pending-tab').setAttribute('aria-selected', String(!approved));
+  }
+  $('#approved-tab').addEventListener('click', () => {
+    setWorkspace(true);
+    if (!$('#approved-list').childNodes.length) loadApproved();
+  });
+  $('#pending-tab').addEventListener('click', () => {
+    if (!mayLeave()) return;
+    emptyEditor(); setWorkspace(false);
+  });
+  document.addEventListener('employee-signed-out', () => {
+    searchSequence++; emptyEditor(); $('#approved-list').replaceChildren(); notice('#approved-status', ''); setWorkspace(false);
+  });
+  $('#approved-search').addEventListener('submit', event => {
+    event.preventDefault(); if (!mayLeave()) return;
+    searchFields = Object.fromEntries(new FormData(event.target)); approvedOffset = 0;
+    busy($('button[type=submit]', event.target), loadApproved);
+  });
+  for (const [id, delta] of [['#approved-previous', -30], ['#approved-next', 30]]) {
+    $(id).addEventListener('click', () => {
+      if (!mayLeave()) return;
+      approvedOffset = Math.max(0, approvedOffset + delta); busy($(id), loadApproved);
+    });
+  }
+  async function loadApproved() {
+    const request = ++searchSequence, requestToken = token;
+    notice('#approved-status', 'Loading approved records…'); emptyEditor();
+    $('#approved-list').replaceChildren(node('p', 'Loading…', 'muted'));
+    const params = new URLSearchParams(searchFields); if (!params.get('zip')) params.delete('zip'); params.set('offset', String(approvedOffset));
+    try {
+      const response = await api(`/api/moderation/resources?${params}`);
+      if (request !== searchSequence || token !== requestToken) return;
+      approvedType = searchFields.resource_type; $('#approved-list').replaceChildren();
+      for (const row of response.items) {
+        const button = node('button', null, 'queue-card'); button.dataset.recordId = row._id;
+        button.append(node('span', approvedType === 'place' ? 'Location' : 'Event', 'eyebrow'), node('strong', row.name || row.title), node('span', row.address, 'small muted'));
+        if (row.starts_at) button.append(node('span', new Date(row.starts_at).toLocaleString(), 'small muted'));
+        button.addEventListener('click', () => {
+          if (!mayLeave()) return;
+          for (const other of $('#approved-list').children) other.classList.remove('selected'); button.classList.add('selected');
+          loadRecord(row._id);
+        });
+        $('#approved-list').append(button);
+      }
+      if (!response.items.length) $('#approved-list').append(node('p', 'No matching approved records. Try another name or ZIP.', 'muted'));
+      $('#approved-previous').hidden = approvedOffset === 0; $('#approved-next').hidden = !response.has_more;
+      notice('#approved-status', `${response.items.length} approved ${approvedType === 'place' ? 'locations' : 'events'} shown${approvedOffset ? ` · starting at ${approvedOffset + 1}` : ''}.`);
+    } catch (error) { if (request === searchSequence) notice('#approved-status', error.message, true); }
+  }
+  async function loadRecord(id) {
+    emptyEditor();
+    const request = ++selectionSequence, requestToken = token;
+    try {
+      const result = await api(`/api/moderation/resources/${approvedType}/${encodeURIComponent(id)}`);
+      if (request !== selectionSequence || token !== requestToken) return;
+      approvedSelection = result; approvedDirty = false; renderApprovedEditor();
+    } catch (error) { notice('#approved-status', error.message, true); }
+  }
+  function renderApprovedEditor() {
+    const selected = approvedSelection, container = $('#approved-editor'); container.replaceChildren();
+    container.append(node('h2', selected.resource.name), node('p', `Reference: ${selected.id}`, 'hint'));
+    if (approvedType === 'place') container.append(node('p', 'Linked events keep their saved venue details. Review those events after changing this location’s name, address or coordinates.', 'hint'));
+    const form = node('form'); const fields = node('div'); resourceForm(fields, selected.resource, {approved: true}); form.append(fields);
+    if (approvedType === 'event') {
+      const venue = node('button', 'Use current venue details', 'secondary'); venue.type = 'button';
+      venue.addEventListener('click', () => busy(venue, async () => {
+        try {
+          const requestToken = token;
+          const id = $('[name=place_id]', form).value.trim();
+          const result = await api(`/api/moderation/resources/place/${encodeURIComponent(id)}`);
+          if (approvedSelection !== selected || token !== requestToken) return;
+          const r = result.resource;
+          for (const [key, value] of Object.entries({place_name: r.name, address: r.address, region: r.region, lat: r.lat, lng: r.lng})) $('[name=' + key + ']', form).value = value;
+          if (r.zip) $('[name=zip]', form).value = r.zip;
+          approvedDirty = true; notice('#approved-status', 'Current venue details copied. Review and save to update this event.');
+        } catch (error) { notice('#approved-status', error.message, true); }
+      })); form.append(venue);
+    }
+    const noteLabel = node('label', 'Reason for this change'); const note = node('textarea'); note.required = true; note.minLength = 3; note.maxLength = 1000; note.name = 'edit_note';
+    note.placeholder = 'Describe the correction and what you checked.'; noteLabel.append(note); form.append(noteLabel);
+    const checked = node('label', null, 'small'); const checkbox = node('input'); checkbox.type = 'checkbox'; checkbox.required = true;
+    checked.append(checkbox, document.createTextNode('I reviewed these changes. Saving updates the approved directory immediately.')); form.append(checked);
+    const actions = node('div', null, 'actions'); const save = node('button', 'Save approved record'); save.type = 'submit';
+    const reload = node('button', 'Reload record', 'secondary'); reload.type = 'button'; reload.addEventListener('click', () => { if (mayLeave()) loadRecord(selected.id); });
+    actions.append(save, reload); form.append(actions); container.append(form);
+    form.addEventListener('input', () => { approvedDirty = true; }); form.addEventListener('change', () => { approvedDirty = true; });
+    form.addEventListener('submit', event => {
+      event.preventDefault(); busy(save, async () => {
+        const submittedToken = token, submittedSelection = selectionSequence;
+        try {
+          const result = await api(`/api/moderation/resources/${selected.resource.resource_type}/${encodeURIComponent(selected.id)}`, {
+            method: 'PUT', body: JSON.stringify({version: selected.version, note: note.value.trim(), resource: readResource(form)})});
+          if (token !== submittedToken || selectionSequence !== submittedSelection) return;
+          approvedSelection = result; approvedDirty = false; renderApprovedEditor();
+          const rowButton = [...$('#approved-list').children].find(button => button.dataset.recordId === result.id);
+          if (rowButton) { $('strong', rowButton).textContent = result.resource.name; const address = $('span.small', rowButton); if (address) address.textContent = result.resource.address; }
+          notice('#approved-status', 'Saved. The approved directory now includes your changes.');
+        } catch (error) { notice('#approved-status', error.message, true); }
+      });
+    });
+    if (selected.history.length) {
+      container.append(node('h3', 'Recent changes'));
+      for (const entry of [...selected.history].reverse()) container.append(node('p', `${new Date(entry.at).toLocaleString()} · ${entry.note}`, 'small muted'));
+    }
+  }
+  window.addEventListener('beforeunload', event => { if (approvedDirty) { event.preventDefault(); event.returnValue = ''; } });
 }

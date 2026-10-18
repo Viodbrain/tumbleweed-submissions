@@ -13,6 +13,7 @@ def test_public_service_has_no_login_or_moderation_routes():
         assert client.get("/directory").status_code == 200
         assert client.get("/maintain").status_code == 404
         assert client.get("/api/moderation/submissions").status_code == 404
+        assert client.get("/api/moderation/resources").status_code == 404
         assert client.post("/api/maintainer/login", json={}).status_code == 404
 
 
