@@ -29,10 +29,8 @@ h3 { margin: 12px 0; font-size: 24px; letter-spacing: -.5px; }
 p { margin: 8px 0 20px; }
 .muted, .hint { color: var(--muted); }
 .eyebrow { color: var(--muted); font-size: 13px; font-weight: 600; letter-spacing: .3px; }
-.hero { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 48px; align-items: center; padding: 12px 0 64px; }
+.hero { display: grid; grid-template-columns: minmax(0, 1fr); gap: 48px; align-items: center; padding: 12px 0 64px; }
 .hero p { max-width: 620px; font-size: 20px; }
-.horizon { position: relative; width: 100%; height: 150px; border-bottom: 1px solid var(--sun); align-self: end; margin-bottom: 28px; }
-.horizon::after { content: ''; position: absolute; right: 24px; bottom: 0; width: 44px; height: 44px; border-radius: 50%; background: var(--sun); }
 label { display: block; font-size: 14px; font-weight: 600; }
 input, select, textarea { display: block; width: 100%; min-width: 0; min-height: 46px; margin: 8px 0 0; padding: 11px 12px; border: 1px solid #8b8276; border-radius: 4px; background: var(--white); color: var(--ink); font: 400 16px/1.5 'Manrope', sans-serif; }
 input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
@@ -120,7 +118,6 @@ html { scroll-behavior: smooth; }
 }
 @media (max-width: 800px) {
   .hero, .public-contribute { grid-template-columns: 1fr; }
-  .horizon { display: none; }
   .public-contribute { gap: 28px; }
   .public-explainer h2 br { display: none; }
   .public-cards { grid-template-columns: 1fr; }
