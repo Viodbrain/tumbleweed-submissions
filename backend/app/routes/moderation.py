@@ -1,5 +1,6 @@
 """Authenticated, revision-checked moderation with retryable publication."""
 
+import re
 from datetime import UTC, datetime
 from hashlib import sha256
 
@@ -142,7 +143,27 @@ async def approve(submission_id: str, body: ReviewDecision):
         existing = await get_publisher_db()[collection].find_one({"_id": doc["_id"]})
         if existing is None or existing.get("approval_submission_id") != submission_id:
             raise HTTPException(409, "Published ID collision; no existing record was overwritten") from None
-    # If interrupted between insert and completion, retry the frozen revision safely.
+    if collection == "places":
+        # A verified resource point is a fallback search origin, not a ZIP centroid.
+        # Preserve authoritative ZIP data and the first fallback on subsequent approvals.
+        locality = re.search(
+            r",\s*([^,]+),?\s+([A-Z]{2})\s+" + re.escape(resource.zip) + r"(?:-\d{4})?\s*$", resource.address
+        )
+        zip_doc = {
+            "city": locality.group(1).strip().lower() if locality else "",
+            "state": locality.group(2) if locality else "",
+            "location": doc["location"],
+            "location_source": "approved_place_fallback",
+            "is_approximate": True,
+            "source_place_id": doc["_id"],
+            "source_url": doc["source_url"],
+            "created_at": row["updated_at"],
+        }
+        await get_publisher_db().zips.update_one(
+            {"_id": resource.zip}, {"$setOnInsert": zip_doc}, upsert=True
+        )
+    # If interrupted between writes, retry the frozen revision safely.
+
     await db.pending_resources.update_one(
         {"_id": submission_id, "status": "approving", "revision": body.revision},
         {

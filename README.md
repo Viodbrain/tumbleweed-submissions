@@ -290,3 +290,21 @@ checks; local entrypoint tests do not prove a Vercel build or Atlas network acce
 References: [Vercel FastAPI](https://vercel.com/docs/frameworks/backend/fastapi),
 [Python runtime](https://vercel.com/docs/functions/runtimes/python),
 [network access options](https://vercel.com/kb/guide/can-i-get-a-fixed-ip-address).
+
+
+## ZIP registration on location approval
+
+Approving a location also creates its ZIP lookup if absent, using an atomic
+`$setOnInsert` upsert. Existing ZIP documents, including their coordinates, are
+never overwritten. The new point is the employee-reviewed location's coordinates,
+marked `is_approximate=true` and `location_source=approved_place_fallback`, with
+source place ID and URL. It is a fallback search origin, not an official ZIP
+centroid. City/state are extracted only from a recognizable address suffix;
+otherwise they remain empty rather than guessed. Replace fallback data with an
+authoritative ZIP dataset when available.
+
+Pending/rejected submissions do not create ZIPs. ZIP writes must succeed before
+publication is marked complete; failures remain in Publishing for safe retry.
+The employee publisher needs update/upsert permission on `tumbleweed.zips` as well
+as existing places/events permissions. The public service still needs read only.
+Existing approved records are not automatically backfilled by this change.

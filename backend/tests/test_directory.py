@@ -101,6 +101,7 @@ class Database:
     def __init__(self):
         for name in (
             "places",
+            "zips",
             "events",
             "pending_resources",
             "directory_limits",
@@ -122,11 +123,12 @@ def client(monkeypatch):
             name: getattr(pending, name)
             for name in ("pending_resources", "directory_limits", "maintainer_credentials", "maintainer_sessions")
         },
+        zips=approved.zips,
         places=approved.places,
         events=approved.events,
     )
     # Separate fakes: an incorrect database/collection choice cannot silently pass.
-    for name in ("places", "events"):
+    for name in ("places", "events", "zips"):
         delattr(pending, name)
     for name in ("pending_resources", "directory_limits", "maintainer_credentials", "maintainer_sessions"):
         delattr(approved, name)
@@ -374,3 +376,54 @@ def test_publication_uses_compact_event_ids_and_venue_links():
     _, doc = moderation.final_document("submission-123", body)
     assert len(doc["_id"]) == 14 and doc["_id"].startswith("e_")
     assert doc["title"] == body.name and doc["place_id"] == body.place_id
+
+
+def test_approval_registers_unknown_zip_and_preserves_existing_zip(client, monkeypatch):
+    http, db = client
+    # Exercise the real ZIP resolver, rather than the fixture's fixed search origin.
+    from app import data
+    from app.models import GeoPoint
+    async def resolve(zip):
+        row = await db.zips.find_one({"_id": zip})
+        return SimpleNamespace(location=GeoPoint.model_validate(row["location"])) if row else None
+    monkeypatch.setattr(data, "resolve_point", resolve)
+    assert http.get("/api/directory?zip=99344").status_code == 404
+    body = resource() | {"address": "123 Example Street, Othello, WA 99344"}
+    identifier = http.post("/api/submissions", json=body).json()["submission_id"]
+    assert not db.zips.rows  # Pending data cannot change approved lookup data.
+    headers = sign_in(http)
+    path = f"/api/moderation/submissions/{identifier}/approve"
+    decision = {"revision": 1, "note": "Verified source and map point"}
+    assert http.post(path, headers=headers, json=decision).status_code == 200
+    row = db.zips.rows["99344"]
+    assert row["city"] == "othello" and row["state"] == "WA"
+    assert row["location"]["coordinates"] == (-119.16, 46.82)
+    assert row["is_approximate"] and row["location_source"] == "approved_place_fallback"
+    assert http.get("/api/directory?zip=99344").status_code == 200
+    assert http.post(path, headers=headers, json=decision).status_code == 200
+    assert len(db.zips.rows) == 1
+    # A second location must not replace a surveyed/authoritative ZIP point.
+    existing = {"_id": "99344", "city": "othello", "state": "WA",
+                "location": {"type": "Point", "coordinates": [-119.2, 46.9]}, "source": "verified"}
+    db.zips.rows["99344"] = deepcopy(existing)
+    identifier = submit(http)
+    assert http.post(f"/api/moderation/submissions/{identifier}/approve", headers=headers,
+                     json=decision).status_code == 200
+    assert db.zips.rows["99344"] == existing
+
+
+def test_zip_write_failure_leaves_publication_retryable(client, monkeypatch):
+    http, db = client
+    identifier = submit(http)
+    headers = sign_in(http)
+    path = f"/api/moderation/submissions/{identifier}/approve"
+    decision = {"revision": 1, "note": "Verified source"}
+    original = db.zips.update_one
+    monkeypatch.setattr(db.zips, "update_one", AsyncMock(side_effect=RuntimeError("Temporary write failure")))
+    with pytest.raises(RuntimeError, match="Temporary write failure"):
+        http.post(path, headers=headers, json=decision)
+    assert db.pending_resources.rows[identifier]["status"] == "approving"
+    assert len(db.places.rows) == 1 and not db.zips.rows
+    monkeypatch.setattr(db.zips, "update_one", original)
+    assert http.post(path, headers=headers, json=decision).status_code == 200
+    assert len(db.places.rows) == len(db.zips.rows) == 1
