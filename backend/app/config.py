@@ -44,7 +44,8 @@ class Settings(BaseModel):
 
 @lru_cache(maxsize=1)
 def get_config():
-    env = {**dotenv_values(ROOT / ".env", interpolate=False), **os.environ}
+    local = {} if os.getenv("VERCEL") else dotenv_values(ROOT / ".env", interpolate=False)
+    env = {**local, **os.environ}
     mapping = {
         "SERVICE_ROLE": "service_role",
         "SUBMISSIONS_DB": "submissions_db",

@@ -5,6 +5,7 @@ from hashlib import sha256
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from pydantic import ValidationError
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
@@ -99,7 +100,12 @@ async def approve(submission_id: str, body: ReviewDecision):
         return {"status": "approved", "published_id": row["published_id"]}
     if row["status"] not in ("pending", "approving"):
         raise HTTPException(409, "Only pending submissions can be approved")
-    resource = ResourceInput.model_validate(row["resource"])
+    try:
+        resource = ResourceInput.model_validate(row["resource"])
+    except ValidationError:
+        raise HTTPException(
+            422, "Complete and save the verified details, including both map coordinates, before approving."
+        ) from None
     now = datetime.now(UTC)
     if resource.resource_type == "event" and resource.starts_at <= now and row["status"] == "pending":
         raise HTTPException(422, "Event is in the past. Edit its date or reject it.")

@@ -84,6 +84,75 @@ function readResource(form) {
   }
   return resource;
 }
+function publicResourceForm(container, seed = {}) {
+  container.innerHTML = `<div class="form-grid">
+<label class="full">I’d like to share<select name="resource_type"><option value="place">A food location</option><option value="event">An upcoming event</option></select></label>
+<label class="full"><span id="public-name-label">Location name</span><input name="name" minlength="2" maxlength="160" required></label>
+<label>ZIP code<input name="zip" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="postal-code" required></label>
+<label>Area<select name="region"><option value="rural">Rural Washington</option><option value="seattle">Seattle</option></select></label>
+<div class="full" data-public="event"><label>Venue name (optional filter)<input name="venue_query" maxlength="100" placeholder="e.g. community pantry"></label><button id="find-venues" type="button" class="secondary">Find venues in this ZIP</button><div id="venue-status" role="status" class="hint"></div><label>Event venue<select name="place_id"><option value="">Choose an approved location</option></select></label><input name="place_name" type="hidden"><p class="hint">Venue not listed? Submit it as a location first so our team can review it.</p></div>
+<label class="full">Street address<input name="address" minlength="5" maxlength="300" autocomplete="street-address" required></label>
+<label class="full" data-public="place">Location type<select name="kind"><option value="foodbank">Food bank or pantry</option><option value="grocery">Grocery store</option><option value="market">Farmers market</option><option value="meal">Community meal</option></select></label>
+<label class="full" data-public="place">Opening hours (optional)<input name="hours" maxlength="500" placeholder="e.g. Tuesdays, 1–4 pm"></label>
+<label class="full" data-public="place">Public phone number (optional)<input name="phone" type="tel" maxlength="60"></label>
+<label class="full" data-public="place"><input name="accepts_snap" type="checkbox">This location accepts SNAP</label>
+<div class="full" data-public="event"><label>Event start<input name="starts_at" type="datetime-local" step="0.001"></label><p class="hint public-time-zone"></p><label>Event end (optional)<input name="ends_at" type="datetime-local" step="0.001"></label></div>
+<details class="full public-map"><summary>Map coordinates (optional)</summary><p class="hint">If you know the exact coordinates, include both. Otherwise our team will verify the map location.</p><div class="coordinate-pair"><label>Latitude<input name="lat" type="number" step="any" min="-90" max="90"></label><label>Longitude<input name="lng" type="number" step="any" min="-180" max="180"></label></div></details>
+<label class="full">Public source URL<input name="source_url" type="url" maxlength="2000" placeholder="https://organization.org/food-support" required><span class="hint">An organization’s website, event announcement, or public listing helps us verify the details.</span></label>
+<label class="full">Anything else we should know? (optional)<textarea name="notes" maxlength="2000" placeholder="Who can attend, what’s offered, accessibility, or details to check."></textarea></label></div>`;
+  const type = $('[name=resource_type]', container), zip = $('[name=zip]', container), picker = $('[name=place_id]', container);
+  let venues = new Map(), lookupSequence = 0;
+  for (const [key, value] of Object.entries(seed)) {
+    const input = $(`[name="${key}"]`, container); if (input && value != null && key !== 'place_id') input.value = value;
+  }
+  $('.public-time-zone', container).textContent = `Enter times in ${Intl.DateTimeFormat().resolvedOptions().timeZone}, your browser’s time zone.`;
+  function showVenues(rows) {
+    venues = new Map(rows.map(row => [row._id, row])); picker.replaceChildren(node('option', 'Choose an approved location')); picker.options[0].value = '';
+    for (const row of rows) { const option = node('option', `${row.name} — ${row.address}`); option.value = row._id; picker.append(option); }
+  }
+  function chooseVenue() {
+    const venue = venues.get(picker.value); if (!venue) return;
+    for (const [key, value] of Object.entries({place_name: venue.name, address: venue.address, region: venue.region,
+      lat: venue.location.coordinates[1], lng: venue.location.coordinates[0]})) $(`[name=${key}]`, container).value = value;
+    if (venue.zip) zip.value = venue.zip;
+  }
+  async function lookupVenues() {
+    const request = ++lookupSequence;
+    if (!zip.checkValidity() || !zip.value) { $('#venue-status', container).textContent = 'Enter a valid five-digit ZIP first.'; zip.reportValidity(); return; }
+    showVenues([]); $('#venue-status', container).textContent = 'Finding approved venues…';
+    try {
+      const params = new URLSearchParams({zip: zip.value, q: $('[name=venue_query]', container).value.trim()});
+      const response = await api(`/api/venues?${params}`); if (request !== lookupSequence) return;
+      showVenues(response.items);
+      $('#venue-status', container).textContent = response.items.length ? `${response.items.length} venues found.${response.has_more ? ' Enter part of the venue name to narrow the list.' : ''}` : 'No venues found. Try a different ZIP or submit a location first.';
+    } catch (error) { if (request === lookupSequence) $('#venue-status', container).textContent = error.message; }
+  }
+  function sync() {
+    const event = type.value === 'event';
+    for (const section of container.querySelectorAll('[data-public]')) {
+      section.hidden = (section.dataset.public === 'event') !== event;
+      for (const input of section.querySelectorAll('input,select,textarea,button')) input.disabled = section.hidden;
+    }
+    for (const name of ['place_id', 'starts_at']) $(`[name=${name}]`, container).required = event;
+    $('[name=address]', container).readOnly = event; $('.public-map', container).hidden = event;
+    $('#public-name-label', container).textContent = event ? 'Event title' : 'Location name';
+  }
+  type.addEventListener('change', () => { lookupSequence++; sync(); if (type.value === 'event' && !picker.value && zip.value) lookupVenues(); });
+  zip.addEventListener('input', () => { lookupSequence++; showVenues([]); });
+  picker.addEventListener('change', chooseVenue);
+  $('#find-venues', container).addEventListener('click', () => busy($('#find-venues', container), lookupVenues));
+  if (seed.place_id) {
+    showVenues([{_id: seed.place_id, name: seed.place_name, address: seed.address, zip: seed.zip,
+      region: seed.region, location: {coordinates: [seed.lng, seed.lat]}}]); picker.value = seed.place_id; chooseVenue();
+  }
+  sync();
+}
+function readPublicResource(form) {
+  const resource = readResource(form), values = new FormData(form);
+  for (const key of ['lat', 'lng']) if (!values.get(key)?.trim()) resource[key] = null;
+  return resource;
+}
+
 function safeLink(url, label) {
   const parsed = new URL(url); if (!['https:', 'http:'].includes(parsed.protocol)) return node('span', label);
   const a = node('a', label); a.href = parsed.href; a.target = '_blank'; a.rel = 'noopener noreferrer'; return a;
@@ -104,8 +173,9 @@ function card(resource, event = false) {
   if (!event && document.body.dataset.page === 'directory') {
     const add = node('button', 'Add an event here', 'secondary'); add.type = 'button';
     add.addEventListener('click', () => {
-      resourceForm($('#resource-fields'), {resource_type: 'event', place_id: resource._id,
-        place_name: resource.name, address: resource.address, zip: resource.zip || $('#search [name=zip]').value,
+      $('#submission').hidden = false; $('#submission-receipt').hidden = true;
+      publicResourceForm($('#resource-fields'), {resource_type: 'event', place_id: resource._id,
+        place_name: resource.name, address: resource.address, zip: resource.zip || resource.address.match(/\bWA\s+([0-9]{5})\b/i)?.[1] || $('#search [name=zip]').value,
         region: resource.region || 'rural', lat: resource.location.coordinates[1], lng: resource.location.coordinates[0]});
       $('#contribute').scrollIntoView({behavior: 'smooth'});
     });
@@ -114,25 +184,27 @@ function card(resource, event = false) {
   return c;
 }
 if (document.body.dataset.page === 'directory') {
-  resourceForm($('#resource-fields'));
-  let active = 'places'; let result = null; let offset = 0; let searchParams;
+  publicResourceForm($('#resource-fields'));
+  $('#submit-another').addEventListener('click', () => { $('#submission').reset(); publicResourceForm($('#resource-fields')); $('#submission').hidden = false; $('#submission-receipt').hidden = true; notice('#submission-status', ''); });
+  let active = 'places'; let result = null; let offset = 0; let searchParams; let searchSequence = 0;
   function render() {
     const container = $('#cards'); container.replaceChildren(); if (!result) return;
     for (const row of result[active].items) container.append(card(row, active === 'events'));
     if (!result[active].items.length) {
       const empty = node('div', null, 'empty'); empty.append(node('h3', active === 'places' ? 'No locations found here yet.' : 'No upcoming events found.'), node('p', 'Try a wider area, or share a resource to help grow this directory.', 'muted')); container.append(empty);
     }
-    $('#more').hidden = !(result.places.has_more || result.events.has_more);
+    $('#more').hidden = !result[active].has_more;
     $('#place-count').textContent = `(${result.places.items.length})`; $('#event-count').textContent = `(${result.events.items.length})`;
   }
   for (const tab of document.querySelectorAll('[data-tab]')) tab.addEventListener('click', () => {
     active = tab.dataset.tab; for (const t of document.querySelectorAll('[data-tab]')) t.setAttribute('aria-selected', String(t === tab)); render();
   });
   async function search(more = false) {
+    const request = ++searchSequence;
     notice('#search-status', 'Looking for nearby resources…');
     try {
       const params = new URLSearchParams(searchParams); params.set('offset', String(more ? offset + 30 : 0));
-      const next = await api(`/api/directory?${params}`);
+      const next = await api(`/api/directory?${params}`); if (request !== searchSequence) return;
       if (more) { offset += 30; for (const group of ['places', 'events']) { next[group].items = [...result[group].items, ...next[group].items]; } }
       else offset = 0;
       result = next; render(); notice('#search-status', `Showing approved resources within ${result.radius_mi} miles of ${result.zip}.`);
@@ -143,9 +215,8 @@ if (document.body.dataset.page === 'directory') {
   $('#submission').addEventListener('submit', event => {
     event.preventDefault(); const form = event.target;
     busy($('button[type=submit]', form), async () => {
-      try { const response = await api('/api/submissions', {method: 'POST', body: JSON.stringify(readResource(form))});
-        form.reset(); resourceForm($('#resource-fields'));
-        notice('#submission-status', `Thank you! Your submission is pending review. Reference: ${response.submission_id}. It will appear after approval.`);
+      try { const response = await api('/api/submissions', {method: 'POST', body: JSON.stringify(readPublicResource(form))});
+        form.hidden = true; $('#submission-receipt').hidden = false; $('#submission-reference').textContent = response.submission_id; $('#submission-receipt').scrollIntoView({behavior: 'smooth', block: 'center'});
       } catch (error) { notice('#submission-status', error.message, true); }
     });
   });

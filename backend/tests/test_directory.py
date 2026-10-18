@@ -194,8 +194,6 @@ def submit(http, event=False):
 @pytest.mark.parametrize("event", [False, True])
 def test_pending_edit_approve_isolation_and_idempotency(client, event):
     http, db = client
-    identifier = submit(http, event)
-    assert not db.places.rows and not db.events.rows
     if event:
         db.places.rows["example-hall"] = {
             "_id": "example-hall",
@@ -204,6 +202,8 @@ def test_pending_edit_approve_isolation_and_idempotency(client, event):
             "region": "rural",
             "location": {"type": "Point", "coordinates": [-119.16, 46.82]},
         }
+    identifier = submit(http, event)
+    assert len(db.places.rows) == int(event) and not db.events.rows
     browse = http.get("/api/directory?zip=99344").json()
     assert browse["events"]["items"] == []
     assert len(browse["places"]["items"]) == int(event)
@@ -342,7 +342,15 @@ def test_web_interfaces_available_without_exposing_credentials(client):
 
 def test_event_cannot_publish_with_missing_or_mismatched_venue(client):
     http, db = client
+    db.places.rows["example-hall"] = {
+        "_id": "example-hall",
+        "name": "Example hall",
+        "address": "123 Example Street",
+        "region": "rural",
+        "location": {"type": "Point", "coordinates": [-119.16, 46.82]},
+    }
     identifier = submit(http, event=True)
+    db.places.rows.clear()  # Venue disappeared after the visitor submitted it.
     headers = sign_in(http)
     response = http.post(
         f"/api/moderation/submissions/{identifier}/approve",
